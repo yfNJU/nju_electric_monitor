@@ -2,7 +2,7 @@ name: Auto Monitor Schedule
 
 on:
   schedule:
-    - cron: "0 1,7,13 * * *" # UTC 时间对应北京时间 9:00, 15:00, 21:00
+    - cron: "0 19,1,7,13 * * *" # UTC 时间对应北京时间 03:00, 09:00, 15:00, 21:00
   workflow_dispatch:
 
 permissions:
@@ -42,16 +42,13 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        # 固定为 3.11，确保 ddddocr==1.4.11 有可用轮子
         python-version: '3.11'
 
     - name: Install system dependencies (Chromium + ChromeDriver + fonts)
       run: |
         sudo apt-get update
         sudo apt-get install -y chromium-browser chromium-chromedriver || true
-        # 安装常用中文字体，避免 matplotlib 警告并支持中文显示
         sudo apt-get install -y fonts-noto-cjk fonts-noto-color-emoji fonts-wqy-zenhei fonts-wqy-microhei fonts-dejavu-core || true
-        # sudo apt-get install -y tesseract-ocr || true # 不再使用
         sudo apt-get clean || true
         sudo fc-cache -fv
 
@@ -79,16 +76,10 @@ jobs:
         git config user.email "github-actions[bot]@users.noreply.github.com"
         branch=${GITHUB_REF##*/}
         echo "Current branch: $branch"
-
-        # 提交 data/ 目录的变更（如果有）
         git add -A data/ || echo "no data/ changes"
         git commit -m "Auto update: data (run ${GITHUB_RUN_ID})" -q || echo "No data changes to commit"
-
-        # 提交 logs/ 目录的变更（如果有）
         git add -A logs/ || echo "no logs/ changes"
         git commit -m "Auto update: logs (run ${GITHUB_RUN_ID})" -q || echo "No logs changes to commit"
-
-        # 使用 token 推送到当前分支
         git remote set-url origin https://x-access-token:${GIT_UPDATE_TOKEN}@github.com/${{ github.repository }}.git
         git push origin "HEAD:$branch" || echo "Push failed"
 
@@ -101,7 +92,6 @@ jobs:
         latest=$(ls -t logs 2>/dev/null | head -n1 || true)
         if [ -n "$latest" ]; then
           echo "---- BEGIN latest log: $latest ----";
-          # 输出整个日志文件而不限行数
           cat "logs/$latest" || true
           echo "---- END latest log ----";
         else
