@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>宿舍电量监控</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif; background: #09111f; color: #edf5ff; }
+    body { margin: 0; background: radial-gradient(circle at top, #123156, #09111f 55%); min-height: 100vh; }
+    .wrap { max-width: 980px; margin: auto; padding: 36px 20px 56px; }
+    h1 { margin: 0; font-size: clamp(28px, 6vw, 48px); }
+    .sub, .label, .muted { color: #a8bdd8; }
+    .sub { margin: 10px 0 28px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .card { background: #101d30cc; border: 1px solid #284565; border-radius: 16px; padding: 20px; box-shadow: 0 12px 32px #0004; }
+    .label { font-size: 14px; }
+    .value { font-size: 44px; font-weight: 750; margin: 8px 0; }
+    .unit { font-size: 18px; color: #9fd7ff; }
+    .chart { margin-top: 16px; padding: 10px; overflow: auto; }
+    .chart svg { display: block; width: 100%; min-width: 620px; height: 260px; }
+    .line { fill: none; stroke: #54d6ff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .axis { stroke: #37506e; stroke-width: 1; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    th, td { padding: 10px 4px; border-bottom: 1px solid #27405e; text-align: left; }
+    th { color: #a8bdd8; font-weight: 500; }
+    .error { color: #ffb4b4; }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .value { font-size: 38px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>宿舍电量监控</h1>
+    <p class="sub">数据由自动监控任务采集；页面不包含登录凭据。</p>
+    <section id="content" class="card">正在加载电量数据…</section>
+  </main>
+  <script>
+    const fmt = value => Number(value).toFixed(2);
+    const time = value => String(value).replace("T", " ").replace(/\.\d+$/, "");
+
+    async function load() {
+      try {
+        const raw = await fetch("data/electricity_data.json", { cache: "no-store" })
+          .then(response => {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.text();
+          });
+        const rows = raw.split(/\r?\n/).map(line => {
+          try {
+            const item = JSON.parse(line);
+            return item && item.timestamp && Number.isFinite(Number(item.remaining_electricity))
+              ? { t: item.timestamp, v: Number(item.remaining_electricity), u: item.unit || "度" }
+              : null;
+          } catch { return null; }
+        }).filter(Boolean).sort((left, right) => new Date(left.t) - new Date(right.t));
+
+        if (!rows.length) throw new Error("未找到有效数据");
+        const last = rows.at(-1);
+        const recent = rows.slice(-80);
+        const min = Math.min(...recent.map(item => item.v));
+        const max = Math.max(...recent.map(item => item.v));
+        const span = max - min || 1;
+        const points = recent.map((item, index) => {
+          const x = 36 + index * 848 / Math.max(recent.length - 1, 1);
+          const y = 228 - (item.v - min) * 192 / span;
+          return x.toFixed(1) + "," + y.toFixed(1);
+        }).join(" ");
+        const history = rows.slice(-12).reverse().map(item =>
+          "<tr><td>" + time(item.t) + "</td><td>" + fmt(item.v) + " " + item.u + "</td></tr>"
+        ).join("");
+
+        document.querySelector("#content").innerHTML =
+          "<div class=grid><div><div class=label>当前剩余电量</div><div class=value>" +
+          fmt(last.v) + " <span class=unit>" + last.u + "</span></div><div class=muted>采集时间：" +
+          time(last.t) + "</div></div><div><div class=label>最近 80 条记录范围</div><div class=value>" +
+          fmt(min) + "–" + fmt(max) + " <span class=unit>" + last.u + "</span></div><div class=muted>有效历史记录：" +
+          rows.length + " 条</div></div></div><div class=chart><svg viewBox='0 0 920 260' role=img aria-label='最近电量趋势'><line class=axis x1=36 y1=228 x2=884 y2=228 /><line class=axis x1=36 y1=36 x2=36 y2=228 /><polyline class=line points='" +
+          points + "' /><text x=4 y=42 fill='#a8bdd8'>" + fmt(max) + "</text><text x=4 y=232 fill='#a8bdd8'>" +
+          fmt(min) + "</text></svg></div><h2>最近采集记录</h2><table><thead><tr><th>时间</th><th>剩余电量</th></tr></thead><tbody>" +
+          history + "</tbody></table>";
+      } catch (error) {
+        document.querySelector("#content").innerHTML = "<p class=error>加载失败：" + error.message + "</p>";
+      }
+    }
+    load();
+  </script>
+</body>
+</html>
