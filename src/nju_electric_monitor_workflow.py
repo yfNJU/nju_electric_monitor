@@ -19,6 +19,8 @@ import re
 import json
 import os
 import random
+import math
+from monitoring_checks import BEIJING, parse_timestamp
 from datetime import datetime
 try:
     # Python 3.9+ 内置 zoneinfo
@@ -1540,13 +1542,14 @@ class NJUElectricMonitor:
         """保存数据到文件"""
         try:
             if remaining_electricity is None:
-                self.logger.warning("没有电量数据可保存")
-                return
+                raise ValueError("没有电量数据可保存")
+            if not math.isfinite(remaining_electricity):
+                raise ValueError("电量必须为有限数值")
 
             # 构造数据
             data = {
                 # 数据时间使用北京时间并包含时区信息（如果可用）
-                "timestamp": (datetime.now(BEIJING_TZ).replace(tzinfo=None).isoformat() if BEIJING_TZ else datetime.now().isoformat()),
+                "timestamp": datetime.now(BEIJING).isoformat(),
                 "remaining_electricity": remaining_electricity,
                 "unit": "度"
             }
@@ -1574,26 +1577,16 @@ class NJUElectricMonitor:
             # 用 pandas 统一时间戳格式
             import pandas as pd
             df = pd.DataFrame(rows)
-            # 统一解析为 Asia/Shanghai 时区（先解析，后去除时区）
-            df["time"] = pd.to_datetime(df["time"], errors="coerce")
-            # 确保在读取 CSV 文件后，时间列的时区信息被正确处理
-            df['time'] = pd.to_datetime(df['time'], errors='coerce')
-            if df['time'].dt.tz is not None:
-                df['time'] = df['time'].dt.tz_localize(None)
-            # 如果有时区，先转为 Asia/Shanghai，再去除时区
-            if df["time"].dt.tz is None or str(df["time"].dt.tz) == "None":
-                df["time"] = df["time"].dt.tz_localize("Asia/Shanghai", ambiguous='NaT', nonexistent='NaT')
-            else:
-                df["time"] = df["time"].dt.tz_convert("Asia/Shanghai")
-            # 去除时区信息
-            df["time"] = df["time"].dt.tz_localize(None)
-            # 格式化为 "YYYY-MM-DDTHH:MM:SS.ssssss"（无时区）
-            df["time"] = df["time"].dt.strftime('%Y-%m-%dT%H:%M:%S.%f')
+            # 兼容历史无偏移北京时间与新记录的 +08:00；CSV 保留原有展示格式。
+            df["time"] = df["time"].map(
+                lambda value: parse_timestamp(value).astimezone(BEIJING).replace(tzinfo=None).isoformat(timespec="microseconds")
+            )
             # 写回 CSV
             df.to_csv(csv_path, index=False, header=True, columns=["time", "num", "unit"])
 
             self.logger.info(f"数据已保存: {remaining_electricity} 度")
 
+            df_sorted = None
             # 生成网页版类似的曲线图并保存为PNG
             try:
                 
@@ -1693,10 +1686,12 @@ class NJUElectricMonitor:
                 self.logger.warning(f"生成电量曲线图PNG失败: {e}")
 
             # 生成最近20次电量变化的曲线图并保存为PNG
-            self.generate_recent_20_changes_plot(df_sorted)
+            if df_sorted is not None:
+                self.generate_recent_20_changes_plot(df_sorted)
 
         except Exception as e:
             self.logger.error(f"保存数据时出错: {e}")
+            raise
 
     def send_email_alert_if_needed(self, remaining_electricity):
         """当剩余电量低于阈值时发送邮件提醒。
@@ -2005,7 +2000,13 @@ class NJUElectricMonitor:
                 self.logger.warning("点击充值按钮失败，尝试直接提取数据")
             
             # 9. 提取剩余电量
-            remaining_electricity = self.extract_remaining_electricity()
+            # 学校页面异步加载；0 度也属于有效结果，不能依赖 truthiness。
+            deadline = time.monotonic() + 30
+            while True:
+                remaining_electricity = self.extract_remaining_electricity()
+                if remaining_electricity is not None or time.monotonic() >= deadline:
+                    break
+                time.sleep(3)
 
             # 如果未能成功提取电量，视为本次流程失败（可能是验证码/登录异常导致未进入目标页面）
             if remaining_electricity is None:
@@ -2027,7 +2028,10 @@ class NJUElectricMonitor:
         
         finally:
             if self.driver:
-                self.driver.quit()
+                try:
+                    self.driver.quit()
+                except Exception as e:
+                    self.logger.warning(f"关闭浏览器时出错: {e}")
 
 def main():
     """主函数"""

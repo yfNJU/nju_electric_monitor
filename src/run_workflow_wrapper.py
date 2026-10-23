@@ -168,16 +168,12 @@ try:
             lf.write(f"Running workflow script: {workflow_path}\n")
             lf.flush()
 
-            result = subprocess.run(
+            from monitoring_checks import run_collection
+            run_collection(
                 [sys.executable, workflow_path],
-                stdout=lf,
-                stderr=lf,
+                os.path.join(os.path.dirname(__file__), '..', 'data'),
+                lf,
             )
-
-            if result.returncode != 0:
-                lf.write(f"Workflow script exited with code {result.returncode}\n")
-                lf.flush()
-                raise SystemExit(result.returncode)
 
         except Exception:
             # 记录任何在运行 workflow 脚本时发生的异常

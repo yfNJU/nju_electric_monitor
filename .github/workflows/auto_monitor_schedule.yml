@@ -2,15 +2,32 @@ name: Auto Monitor Schedule
 
 on:
   schedule:
-    - cron: "0 19,1,7,13 * * *" # UTC 时间对应北京时间 03:00, 09:00, 15:00, 21:00
+    - cron: "0 1,7,13,19 * * *" # 北京时间每天 03:00、09:00、15:00、21:00；GitHub 调度可能延迟
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/**'
+      - 'src/**'
+      - 'site/**'
+      - 'config_workflow.json'
+      - 'requirements.txt'
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: electricity-monitor-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      data_commit: ${{ steps.publish.outputs.commit }}
     env:
       NJU_USERNAME: ${{ secrets.NJU_USERNAME }}
       NJU_PASSWORD: ${{ secrets.NJU_PASSWORD }}
@@ -25,7 +42,7 @@ jobs:
 
     steps:
     - name: Check out repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Cache pip
       uses: actions/cache@v4
@@ -40,7 +57,7 @@ jobs:
       run: df -h
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
@@ -55,6 +72,11 @@ jobs:
     - name: Install Python dependencies
       run: python -m pip install -r requirements.txt
 
+    - name: Run offline regression checks
+      run: |
+        python -B -m unittest discover -s src -p test_monitoring_checks.py -v
+        node --test site/dashboard.test.cjs
+
     - name: Cleanup pip cache and temp files
       run: |
         python -m pip cache purge || true
@@ -66,22 +88,25 @@ jobs:
         echo "Running Python wrapper"
         python3 src/run_workflow_wrapper.py
 
-    - name: Commit and push changes
-      if: always()
+    - name: Commit and push verified data
+      id: publish
       shell: bash
-      env:
-        GIT_UPDATE_TOKEN: ${{ secrets.GIT_UPDATE_TOKEN }}
       run: |
+        set -euo pipefail
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         branch=${GITHUB_REF##*/}
-        echo "Current branch: $branch"
-        git add -A data/ || echo "no data/ changes"
-        git commit -m "Auto update: data (run ${GITHUB_RUN_ID})" -q || echo "No data changes to commit"
-        git add -A logs/ || echo "no logs/ changes"
-        git commit -m "Auto update: logs (run ${GITHUB_RUN_ID})" -q || echo "No logs changes to commit"
-        git remote set-url origin https://x-access-token:${GIT_UPDATE_TOKEN}@github.com/${{ github.repository }}.git
-        git push origin "HEAD:$branch" || echo "Push failed"
+        if git diff --quiet -- data/electricity_data.json; then
+          echo "::error::Collection did not produce new electricity data"
+          exit 1
+        fi
+        git add data/ logs/
+        git commit -m "Auto update: verified electricity data (run ${GITHUB_RUN_ID})"
+        # checkout 使用本次运行的 GITHUB_TOKEN，不再依赖长期 PAT。
+        # 非快进推送必须失败，不能覆盖并发人工修改，也不能发布未推送的数据。
+        git push origin "HEAD:$branch"
+        echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        echo "Verified electricity data committed and pushed successfully." >> "$GITHUB_STEP_SUMMARY"
 
     - name: Show latest wrapper log
       if: always()
@@ -105,3 +130,9 @@ jobs:
         name: nju_electric_monitor-logs-${{ github.run_id }}
         path: |
           logs/**
+
+  deploy-pages:
+    needs: run-monitor
+    uses: ./.github/workflows/deploy-pages.yml
+    with:
+      ref: ${{ needs.run-monitor.outputs.data_commit }}

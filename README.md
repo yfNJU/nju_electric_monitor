@@ -28,6 +28,17 @@
 
 本项目已集成 Github Actions 自动定时监控与数据更新，无需本地部署即可自动采集和推送电量数据。
 
+### 本仓库采集与 Pages 发布
+
+- `Auto Monitor Schedule` 按北京时间每天 03:00、09:00、15:00、21:00 请求运行；GitHub 定时调度可能延迟或丢弃，并非准点服务。
+- 也可在 Actions 手动运行；修改主分支的程序、网页、工作流或配置会自动执行一次采集。自动数据提交不会触发循环。
+- 采集成功 → 校验恰好新增一条有效记录且 JSON/CSV 一致 → 提交并推送 → 部署同一数据提交的 Pages。部署不再使用独立 cron。
+- 采集失败最多尝试 3 次，每次最多 4 分钟，间隔 15/30 秒；页面电量异步加载最多等待 30 秒。若失败时已经写入数据，直接报错而不重试，以免重复采集。采集、数据校验或推送失败均阻止自动发布；失败日志仍可在该次 Actions 的日志 artifact 中查看。
+- 推送使用 GitHub 自动提供的 `GITHUB_TOKEN`（`contents: write`），不再依赖 `GIT_UPDATE_TOKEN`。若仓库规则禁止直接推送，任务会明确失败，不能静默跳过。
+- 网页采集时间统一显示北京时间，后接 `(- xx day xx hour)`，每分钟更新；超过 12 小时标红并标注数据已过期。历史无时区时间按北京时间解释，新 JSON 记录显式携带 `+08:00`。
+- `Deploy electricity dashboard` 保留手动发布入口，便于单独重发已有数据；它不会执行采集，也不会把旧数据变新。
+- 离线回归检查：`python -B -m unittest discover -s src -p test_monitoring_checks.py -v` 和 `node --test site/dashboard.test.cjs`，均不会登录学校或发送邮件。
+
 - 自动定时任务：每天多次自动运行，采集电量数据并推送到仓库。
 - 自动安装依赖、中文字体、ChromeDriver、Tesseract OCR。
 - 自动生成数据文件和可视化图片。

@@ -24,6 +24,8 @@
     th, td { padding: 10px 4px; border-bottom: 1px solid #27405e; text-align: left; }
     th { color: #a8bdd8; font-weight: 500; }
     .error { color: #ffb4b4; }
+    .data-age { white-space: nowrap; }
+    .data-age.stale { color: #ff5252; }
     @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .value { font-size: 38px; } }
   </style>
 </head>
@@ -35,7 +37,37 @@
   </main>
   <script>
     const fmt = value => Number(value).toFixed(2);
-    const time = value => String(value).replace("T", " ").replace(/\.\d+$/, "");
+    // 历史数据没有时区后缀，但均为北京时间；避免海外设备按本地时间解释。
+    const timestampMs = value => {
+      const text = String(value);
+      return Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + "+08:00");
+    };
+    const time = value => new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+    }).format(new Date(timestampMs(value)));
+    const dataAge = (value, now = Date.now()) => {
+      const elapsed = now - timestampMs(value);
+      if (!Number.isFinite(elapsed) || elapsed < -300000) {
+        return { text: "(时间异常)", stale: true, title: "请检查设备时间或采集时间" };
+      }
+      const hours = Math.floor(Math.max(0, elapsed) / 3600000);
+      return {
+        text: `(- ${Math.floor(hours / 24)} day ${hours % 24} hour)`,
+        stale: elapsed >= 12 * 3600000,
+        title: elapsed >= 12 * 3600000 ? "数据已超过 12 小时未更新，请检查采集任务" : "距上次采集的时间"
+      };
+    };
+    let latestTimestamp = null;
+    function updateAge() {
+      const element = document.querySelector("#data-age");
+      if (!element || !latestTimestamp) return;
+      const age = dataAge(latestTimestamp);
+      element.textContent = age.text;
+      element.classList.toggle("stale", age.stale);
+      element.title = age.title;
+      document.querySelector("#electricity-label").textContent = age.stale ? "最后记录电量（数据已过期）" : "当前剩余电量";
+    }
 
     async function load() {
       try {
@@ -47,14 +79,16 @@
         const rows = raw.split(/\r?\n/).map(line => {
           try {
             const item = JSON.parse(line);
-            return item && item.timestamp && Number.isFinite(Number(item.remaining_electricity))
-              ? { t: item.timestamp, v: Number(item.remaining_electricity), u: item.unit || "度" }
+            return item && Number.isFinite(timestampMs(item.timestamp)) &&
+              typeof item.remaining_electricity === "number" && Number.isFinite(item.remaining_electricity)
+              ? { t: item.timestamp, v: item.remaining_electricity, u: "度" }
               : null;
           } catch { return null; }
-        }).filter(Boolean).sort((left, right) => new Date(left.t) - new Date(right.t));
+        }).filter(Boolean).sort((left, right) => timestampMs(left.t) - timestampMs(right.t));
 
         if (!rows.length) throw new Error("未找到有效数据");
         const last = rows.at(-1);
+        latestTimestamp = last.t;
         const recent = rows.slice(-80);
         const min = Math.min(...recent.map(item => item.v));
         const max = Math.max(...recent.map(item => item.v));
@@ -69,19 +103,21 @@
         ).join("");
 
         document.querySelector("#content").innerHTML =
-          "<div class=grid><div><div class=label>当前剩余电量</div><div class=value>" +
+          "<div class=grid><div><div class=label id=electricity-label>当前剩余电量</div><div class=value>" +
           fmt(last.v) + " <span class=unit>" + last.u + "</span></div><div class=muted>采集时间：" +
-          time(last.t) + "</div></div><div><div class=label>最近 80 条记录范围</div><div class=value>" +
+          time(last.t) + " <span id=data-age class=data-age role=status></span></div></div><div><div class=label>最近 80 条记录范围</div><div class=value>" +
           fmt(min) + "–" + fmt(max) + " <span class=unit>" + last.u + "</span></div><div class=muted>有效历史记录：" +
           rows.length + " 条</div></div></div><div class=chart><svg viewBox='0 0 920 260' role=img aria-label='最近电量趋势'><line class=axis x1=36 y1=228 x2=884 y2=228 /><line class=axis x1=36 y1=36 x2=36 y2=228 /><polyline class=line points='" +
           points + "' /><text x=4 y=42 fill='#a8bdd8'>" + fmt(max) + "</text><text x=4 y=232 fill='#a8bdd8'>" +
           fmt(min) + "</text></svg></div><h2>最近采集记录</h2><table><thead><tr><th>时间</th><th>剩余电量</th></tr></thead><tbody>" +
           history + "</tbody></table>";
+        updateAge();
       } catch (error) {
         document.querySelector("#content").innerHTML = "<p class=error>加载失败：" + error.message + "</p>";
       }
     }
     load();
+    setInterval(updateAge, 60000);
   </script>
 </body>
 </html>

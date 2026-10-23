@@ -1,13 +1,12 @@
 name: Deploy electricity dashboard
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - 'site/**'
-      - '.github/workflows/deploy-pages.yml'
-  schedule:
-    - cron: '30 19,1,7,13 * * *'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Exact commit containing the verified collection'
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -22,8 +21,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/configure-pages@v5
         with:
           enablement: true
@@ -43,6 +45,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: build
     steps:
       - id: deployment
