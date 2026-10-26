@@ -8,10 +8,32 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from monitoring_checks import BEIJING, parse_timestamp, run_collection, validate_collection
+from monitoring_checks import BEIJING, collection_due, parse_timestamp, run_collection, validate_collection
 
 
 class CollectionTests(unittest.TestCase):
+    def test_schedule_slots_and_midnight(self):
+        def due(now, timestamp, event='schedule'):
+            row = {'timestamp': timestamp, 'remaining_electricity': 0, 'unit': '度'}
+            return collection_due(event, [row], parse_timestamp(now))
+        for hour in (3, 9, 15, 21):
+            with self.subTest(hour=hour):
+                self.assertFalse(due(f'2026-10-27T{hour:02}:17:00', f'2026-10-27T{hour:02}:01:00'))
+                self.assertTrue(due(f'2026-10-27T{hour:02}:17:00', f'2026-10-27T{hour-1:02}:59:00'))
+        self.assertFalse(due('2026-10-27T00:17:00', '2026-10-26T21:01:00'))
+        self.assertTrue(due('2026-10-27T00:17:00', '2026-10-26T20:59:00'))
+        self.assertTrue(due('2026-10-27T09:17:00', '2026-10-28T09:01:00'))
+        self.assertTrue(due('2026-10-27T09:17:00', '2026-10-27T09:01:00', 'workflow_dispatch'))
+        self.assertTrue(due('2026-10-27T09:17:00', '2026-10-27T09:01:00', 'push'))
+
+    def test_schedule_malformed_records_and_utc_clock(self):
+        now = parse_timestamp('2026-10-27T01:17:00+00:00')
+        for value in (float('nan'), True, '123', None):
+            row = {'timestamp': '2026-10-27T09:01:00', 'remaining_electricity': value, 'unit': '度'}
+            self.assertTrue(collection_due('schedule', [row], now))
+        self.assertTrue(collection_due('schedule', [{}], now))
+        self.assertFalse(collection_due('schedule', [{'timestamp': '2026-10-27T09:01:00', 'remaining_electricity': 1, 'unit': '度'}], now))
+
     def setUp(self):
         self.now = datetime.now(BEIJING)
         self.old = {"timestamp": "2026-08-11T16:05:03.113490", "remaining_electricity": 231.12, "unit": "度"}

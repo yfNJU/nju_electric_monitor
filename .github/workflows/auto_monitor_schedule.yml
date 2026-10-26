@@ -2,7 +2,13 @@ name: Auto Monitor Schedule
 
 on:
   schedule:
-    - cron: "0 1,7,13,19 * * *" # 北京时间每天 03:00、09:00、15:00、21:00；GitHub 调度可能延迟
+    # 明确重建四个主调度，UTC 对应北京时间 03/09/15/21 点。
+    - cron: '0 19 * * *'
+    - cron: '0 1 * * *'
+    - cron: '0 7 * * *'
+    - cron: '0 13 * * *'
+    # 避开整点的补采检查：当期已成功采集则跳过。仍受 GitHub 调度可用性影响。
+    - cron: '17 1,7,13,19 * * *'
   workflow_dispatch:
   push:
     branches: [master]
@@ -23,9 +29,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-due:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    outputs:
+      due: ${{ steps.check.outputs.due }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.ref_name }}
+    - name: Check whether this collection slot needs data
+      id: check
+      env:
+        TRIGGER_EVENT: ${{ github.event_name }}
+        TRIGGER_SCHEDULE: ${{ github.event.schedule }}
+      run: python3 -B src/monitoring_checks.py
+
   run-monitor:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    needs: check-due
+    if: needs.check-due.outputs.due == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       data_commit: ${{ steps.publish.outputs.commit }}
     env:
@@ -43,15 +69,17 @@ jobs:
     steps:
     - name: Check out repository
       uses: actions/checkout@v4
+      with:
+        ref: ${{ github.ref_name }}
 
     - name: Cache pip
       uses: actions/cache@v4
       with:
         path: |
           ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-ubuntu24-python311-pip-${{ hashFiles('requirements.txt') }}
         restore-keys: |
-          ${{ runner.os }}-pip-
+          ${{ runner.os }}-ubuntu24-python311-pip-
 
     - name: Show disk usage before install
       run: df -h
@@ -61,26 +89,50 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install system dependencies (Chromium + ChromeDriver + fonts)
+    - name: Verify preinstalled Chrome and matching ChromeDriver
+      timeout-minutes: 2
+      shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y chromium-browser chromium-chromedriver || true
-        sudo apt-get install -y fonts-noto-cjk fonts-noto-color-emoji fonts-wqy-zenhei fonts-wqy-microhei fonts-dejavu-core || true
-        sudo apt-get clean || true
-        sudo fc-cache -fv
+        set -euo pipefail
+        chrome=$(command -v google-chrome || command -v google-chrome-stable)
+        driver=$(command -v chromedriver || true)
+        if [ -z "$driver" ] && [ -n "${CHROMEWEBDRIVER:-}" ]; then
+          driver="$CHROMEWEBDRIVER/chromedriver"
+        fi
+        test -x "$chrome"
+        test -x "$driver"
+        chrome_version=$("$chrome" --version)
+        driver_version=$("$driver" --version)
+        echo "$chrome_version"
+        echo "$driver_version"
+        test "$(echo "$chrome_version" | grep -oE '[0-9]+' | head -1)" = "$(echo "$driver_version" | grep -oE '[0-9]+' | head -1)"
+        echo "CHROME_BINARY=$chrome" >> "$GITHUB_ENV"
+        echo "CHROMEDRIVER_BINARY=$driver" >> "$GITHUB_ENV"
+
+    - name: Install optional Chinese fonts (bounded)
+      timeout-minutes: 4
+      shell: bash
+      run: |
+        if fc-list :lang=zh | grep -q .; then
+          echo "Chinese fonts are already installed"
+        elif sudo timeout 60s apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update &&
+             sudo timeout 120s apt-get -o DPkg::Lock::Timeout=30 -o Acquire::Retries=1 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends fonts-noto-cjk; then
+          timeout 30s fc-cache -f || true
+        else
+          echo "::warning::Chinese font installation unavailable; collection can continue with fallback fonts"
+        fi
 
     - name: Install Python dependencies
-      run: python -m pip install -r requirements.txt
+      timeout-minutes: 8
+      run: python -m pip install --timeout 30 --retries 2 -r requirements.txt
 
     - name: Run offline regression checks
       run: |
         python -B -m unittest discover -s src -p test_monitoring_checks.py -v
         node --test site/dashboard.test.cjs
 
-    - name: Cleanup pip cache and temp files
-      run: |
-        python -m pip cache purge || true
-        df -h
+    - name: Show disk usage
+      run: df -h
 
     - name: Run Auto Monitor (Linux)
       shell: bash

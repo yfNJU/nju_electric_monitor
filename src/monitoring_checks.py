@@ -36,6 +36,59 @@ def parse_timestamp(value):
     return parsed.replace(tzinfo=BEIJING) if parsed.tzinfo is None else parsed
 
 
+def collection_due(event, rows, now):
+    """Skip scheduled duplicates in the current Beijing six-hour collection slot.
+
+    This is catch-up, not an independent scheduler: if GitHub never emits an
+    event, this check cannot run. Manual/code-push runs always collect.
+    """
+    if event != "schedule":
+        return True
+    if now.tzinfo is None:
+        raise ValueError("An aware clock is required")
+    local = now.astimezone(BEIJING)
+    shifted = local - timedelta(hours=3)
+    slot = shifted.replace(hour=(shifted.hour // 6) * 6, minute=0, second=0, microsecond=0) + timedelta(hours=3)
+    for row in rows:
+        try:
+            value = row['remaining_electricity']
+            recorded = parse_timestamp(row['timestamp'])
+            valid = (not isinstance(value, bool) and isinstance(value, (int, float))
+                     and math.isfinite(value) and row.get('unit') == '度')
+            if valid and slot <= recorded <= local:
+                return False
+        except (KeyError, TypeError, ValueError):
+            continue
+    return True
+
+
+def schedule_check():
+    data = Path(__file__).resolve().parents[1] / 'data' / 'electricity_data.json'
+    rows = []
+    if data.exists():
+        for line in data.read_text(encoding='utf-8').splitlines():
+            try:
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    rows.append(row)
+            except json.JSONDecodeError:
+                continue
+    now = datetime.now(BEIJING)
+    event = os.environ.get('TRIGGER_EVENT', 'workflow_dispatch')
+    due = collection_due(event, rows, now)
+    result = f"due={str(due).lower()}\n"
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write(result)
+    summary = (f"Collection decision at {now.isoformat()}: {result.strip()}; "
+               f"event={event}, schedule={os.environ.get('TRIGGER_SCHEDULE', '')}.\n"
+               + ("Collection required.\n" if due else "This Beijing collection slot already has data; skip duplicate collection.\n"))
+    print(summary)
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+            output.write(summary)
+
+
 def validate_collection(before, after, csv_text, started_at, now=None):
     """Require one fresh, finite record, preserved history and matching CSV."""
     if not after.startswith(before):
@@ -96,3 +149,7 @@ def run_collection(command, data_dir, log, attempts=3, timeout=240,
         if attempt == attempts:
             raise RuntimeError(f"Collection failed after {attempts} attempts (exit {code})")
         sleep(15 * attempt)
+
+
+if __name__ == '__main__':
+    schedule_check()

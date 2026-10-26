@@ -262,6 +262,8 @@ class NJUElectricMonitor:
         """设置Chrome浏览器驱动"""
         import platform, shutil
         chrome_options = Options()
+        if os.environ.get('CHROME_BINARY'):
+            chrome_options.binary_location = os.environ['CHROME_BINARY']
         if self.headless_mode:
             # 在新版本 Chrome 中使用 --headless=new 更稳定
             try:
@@ -277,9 +279,12 @@ class NJUElectricMonitor:
         chrome_options.add_argument("--disable-plugins")
         try:
             # 根据平台选择 driver：Windows 优先使用仓库内的 chromedriver；Linux/macOS 优先使用系统 PATH 中的 chromedriver
-            driver_path = None
+            driver_path = os.environ.get('CHROMEDRIVER_BINARY')
             system = platform.system().lower()
-            if system.startswith('win'):
+            if driver_path:
+                if not os.path.isfile(driver_path):
+                    raise FileNotFoundError(f"指定的 ChromeDriver 不存在: {driver_path}")
+            elif system.startswith('win'):
                 chromedriver_path = os.path.join(os.path.dirname(__file__), '..', 'chromedriver-win64', 'chromedriver.exe')
                 if os.path.exists(chromedriver_path):
                     driver_path = chromedriver_path
