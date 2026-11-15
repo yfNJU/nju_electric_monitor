@@ -2,13 +2,12 @@ name: Auto Monitor Schedule
 
 on:
   schedule:
-    # 明确重建四个主调度，UTC 对应北京时间 03/09/15/21 点。
-    - cron: '0 19 * * *'
-    - cron: '0 1 * * *'
-    - cron: '0 7 * * *'
-    - cron: '0 13 * * *'
+    # 显式北京时间；更新 cron 声明以重新注册停滞的调度。
+    - cron: '0 3,9,15,21 * * *'
+      timezone: 'Asia/Shanghai'
     # 避开整点的补采检查：当期已成功采集则跳过。仍受 GitHub 调度可用性影响。
-    - cron: '17 1,7,13,19 * * *'
+    - cron: '17 3,9,15,21 * * *'
+      timezone: 'Asia/Shanghai'
   workflow_dispatch:
   push:
     branches: [master]
